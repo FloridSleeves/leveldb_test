@@ -7,9 +7,9 @@
 # to switch between compilation modes.
 
 # (A) Production use (optimized mode)
-OPT ?= -O2 -DNDEBUG
+# OPT ?= -O2 -DNDEBUG
 # (B) Debug mode, w/ full line-level debugging symbols
-# OPT ?= -g2
+OPT ?= -g2
 # (C) Profiling mode: opt, but w/debugging symbols
 # OPT ?= -O2 -g2 -DNDEBUG
 #-----------------------------------------------
@@ -422,3 +422,8 @@ $(STATIC_OUTDIR)/port/port_posix_sse.o: port/port_posix_sse.cc
 
 $(SHARED_OUTDIR)/port/port_posix_sse.o: port/port_posix_sse.cc
 	$(CXX) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(PLATFORM_SSEFLAGS) -c $< -o $@
+
+simpletest: simple_test.cc
+	$(CXX) simple_test.cc -lleveldb -std=c++11 -g -o $@
+install: out-static/libleveldb.a out-shared/libleveldb.so out-shared/libleveldb.so.1 out-shared/libleveldb.so.1.20
+	cp out-s*/libleveldb* /usr/local/lib
