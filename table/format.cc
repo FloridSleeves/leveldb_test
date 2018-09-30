@@ -11,7 +11,7 @@
 #include "table/block.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
-#define READ_TIME 37
+#define READ_TIME 37000
 namespace leveldb {
 
 void BlockHandle::EncodeTo(std::string* dst) const {
@@ -78,7 +78,8 @@ Status ReadBlock(RandomAccessFile* file,
   char* buf = new char[n + kBlockTrailerSize];
   Slice contents;
    
-  //auto start = std::chrono::system_clock::now();
+  //auto start = std::chrono::system_clock::now();    
+  //std::this_thread::sleep_for(std::chrono::nanoseconds(READ_TIME));
   Status s = file->Read(handle.offset(), n + kBlockTrailerSize, &contents, buf);
   //auto end = std::chrono::system_clock::now();
   //std::chrono::duration<double> diff = end-start;

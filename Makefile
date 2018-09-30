@@ -7,9 +7,9 @@
 # to switch between compilation modes.
 
 # (A) Production use (optimized mode)
-# OPT ?= -O2 -DNDEBUG
+OPT ?= -O2 -DNDEBUG
 # (B) Debug mode, w/ full line-level debugging symbols
-OPT ?= -g2
+# OPT ?= -g2
 # (C) Profiling mode: opt, but w/debugging symbols
 # OPT ?= -O2 -g2 -DNDEBUG
 #-----------------------------------------------
@@ -425,5 +425,5 @@ $(SHARED_OUTDIR)/port/port_posix_sse.o: port/port_posix_sse.cc
 
 simpletest: simple_test.cc
 	$(CXX) simple_test.cc -lleveldb -std=c++11 -g -o $@
-install: out-static/libleveldb.a out-shared/libleveldb.so out-shared/libleveldb.so.1 out-shared/libleveldb.so.1.20
+install: out-static/libleveldb.a out-shared/libleveldb.so out-shared/libleveldb.so.1 out-shared/libleveldb.so.1.20 $(STATIC_OUTDIR)/db_bench
 	cp out-s*/libleveldb* /usr/local/lib

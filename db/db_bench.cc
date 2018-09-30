@@ -813,6 +813,8 @@ class Benchmark {
 	throughput = double(result.kvdata) / secs;
 	printf("Thread %d: HyperLevelDB throughput = %0.6lf MB/s\n", tid, throughput / 1024.0 / 1024.0);
 	printf("TOTAL TIME:%lf\n",total_time);
+        fclose(fp);
+
   }
 
   void ReliabilityCheck(ThreadState* thread) {
@@ -1264,10 +1266,10 @@ class Benchmark {
     Options options;
     options.create_if_missing = true;
     options.block_cache = NewLRUCache(4*1024*1024);
-    options.write_buffer_size = 2*1024*1024;
+    options.write_buffer_size = 4*1024*1024;
     options.max_open_files = FLAGS_open_files;
     options.block_size = 4*1024;
-    options.max_file_size = 2 * 1024 *1024; 
+    options.max_file_size = 4 * 1024 *1024; 
     options.filter_policy = NewBloomFilterPolicy(10);
     options.error_if_exists=false;
     options.compression=kNoCompression;

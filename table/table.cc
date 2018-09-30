@@ -14,7 +14,9 @@
 #include "table/format.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
-
+#include <chrono>
+#include <thread>
+#define READ_TIME 37000
 namespace leveldb {
 
 struct Table::Rep {
@@ -140,10 +142,12 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
   }
   BlockContents block;
 
-  Log(rep_->options.info_log, "\nMETA FILTER BLOCK READ:%d BYTES\n",filter_handle.size()+5);
+  
   if (!ReadBlock(rep_->file, opt, filter_handle, &block).ok()) {
     return;
   }
+  Log(rep_->options.info_log, "\nMETA FILTER BLOCK READ:%d BYTES\n",filter_handle.size()+5);
+
   if (block.heap_allocated) {
     rep_->filter_data = block.data.data();     // Will need to delete later
   }
@@ -194,9 +198,11 @@ Iterator* Table::BlockReader(void* arg,
       Slice key(cache_key_buffer, sizeof(cache_key_buffer));
       cache_handle = block_cache->Lookup(key);
       if (cache_handle != NULL) {
+        Log(table->rep_->options.info_log, "\nCACHE\n");
         block = reinterpret_cast<Block*>(block_cache->Value(cache_handle));
       } else {
         Log(table->rep_->options.info_log, "\nDATA BLOCK READ:%d BYTES\n",handle.size()+5);
+        std::this_thread::sleep_for(std::chrono::nanoseconds(READ_TIME));
         s = ReadBlock(table->rep_->file, options, handle, &contents);
         if (s.ok()) {
           block = new Block(contents);
@@ -208,6 +214,8 @@ Iterator* Table::BlockReader(void* arg,
       }
     } else {
       s = ReadBlock(table->rep_->file, options, handle, &contents);
+      std::this_thread::sleep_for(std::chrono::nanoseconds(READ_TIME));
+
       Log(table->rep_->options.info_log, "\nDATA BLOCK READ:%d BYTES\n",handle.size()+5);
       if (s.ok()) {
         block = new Block(contents);

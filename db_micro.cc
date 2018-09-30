@@ -5,11 +5,10 @@
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "db/db_impl.h"
-#include "db/version_set.h"
 #include "leveldb/cache.h"
 #include "leveldb/db.h"
 #include "leveldb/env.h"
+#include "leveldb/filter_policy.h"
 #include "leveldb/write_batch.h"
 #include "port/port.h"
 #include "util/crc32c.h"
@@ -20,26 +19,44 @@
 
 // Comma-separated list of operations to run in the specified order
 //   Actual benchmarks:
-//      fillseq       -- write N values in sequential key order in async mode
+//xxx      fillseq       -- write N values in sequential key order in async mode
 //      fillrandom    -- write N values in random key order in async mode
+//      overwrite     -- overwrite N values in random key order in async mode
+//      fillsync      -- write N/100 values in random key order in sync mode
+//      fill100K      -- write N/1000 100K values in random order in async mode
+//      deleteseq     -- delete N keys in sequential order
+//      deleterandom  -- delete N keys in random order
 //      readseq       -- read N times sequentially
+//      readreverse   -- read N times in reverse order
 //      readrandom    -- read N times in random order
+//      readmissing   -- read N missing keys in random order
+//      readhot       -- read N times in random order from 1% section of DB
 //      seekrandom    -- N random seeks
+//xxx      open          -- cost of opening a DB
+//xxx      crc32c        -- repeated crc32c of 4K of data
+//xxx      acquireload   -- load N*1000 times
 //   Meta operations:
-//      compact     -- Compact the entire DB
-//      stats       -- Print DB stats
-//      sstables    -- Print sstable info
-//      heapprofile -- Dump a heap profile (if supported by this port)
+//xxx      compact     -- Compact the entire DB
+//xxx      stats       -- Print DB stats
+//xxx      sstables    -- Print sstable info
+//xxx      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    "fillseq,"
+    "fillsync,"
     "fillrandom,"
+    "overwrite,"
     "readrandom,"
     "readrandom,"  // Extra run to allow previous compactions to quiesce
     "readseq,"
-    "readseq,";
+    "readreverse,"
+    "compact,"
+    "readrandom,"
+    "readseq,"
+    "readreverse,"
+    "fill100K,"
+        ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 100;
+static int FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
 static int FLAGS_reads = -1;
@@ -89,12 +106,12 @@ static bool FLAGS_use_existing_db = false;
 static bool FLAGS_reuse_logs = false;
 
 // Use the db with the following name.
-static const char* FLAGS_db = NULL;
+static const char* FLAGS_db = nullptr;
 
 namespace leveldb {
 
 namespace {
-leveldb::Env* g_env = NULL;
+leveldb::Env* g_env = nullptr;
 
 // Helper for quickly generating random data.
 class RandomGenerator {
@@ -273,7 +290,8 @@ struct SharedState {
   int num_done;
   bool start;
 
-  SharedState() : cv(&mu) { }
+  SharedState(int total)
+      : cv(&mu), total(total), num_initialized(0), num_done(0), start(false) { }
 };
 
 // Per-thread state for concurrent executions of the same benchmark.
@@ -347,18 +365,18 @@ class Benchmark {
             kMajorVersion, kMinorVersion);
 
 #if defined(__linux)
-    time_t now = time(NULL);
+    time_t now = time(nullptr);
     fprintf(stderr, "Date:       %s", ctime(&now));  // ctime() adds newline
 
     FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
-    if (cpuinfo != NULL) {
+    if (cpuinfo != nullptr) {
       char line[1000];
       int num_cpus = 0;
       std::string cpu_type;
       std::string cache_size;
-      while (fgets(line, sizeof(line), cpuinfo) != NULL) {
+      while (fgets(line, sizeof(line), cpuinfo) != nullptr) {
         const char* sep = strchr(line, ':');
-        if (sep == NULL) {
+        if (sep == nullptr) {
           continue;
         }
         Slice key = TrimSpace(Slice(line, sep - 1 - line));
@@ -379,11 +397,11 @@ class Benchmark {
 
  public:
   Benchmark()
-  : cache_(FLAGS_cache_size >= 0 ? NewLRUCache(FLAGS_cache_size) : NULL),
+  : cache_(FLAGS_cache_size >= 0 ? NewLRUCache(FLAGS_cache_size) : nullptr),
     filter_policy_(FLAGS_bloom_bits >= 0
                    ? NewBloomFilterPolicy(FLAGS_bloom_bits)
-                   : NULL),
-    db_(NULL),
+                   : nullptr),
+    db_(nullptr),
     num_(FLAGS_num),
     value_size_(FLAGS_value_size),
     entries_per_batch_(1),
@@ -412,12 +430,12 @@ class Benchmark {
     Open();
 
     const char* benchmarks = FLAGS_benchmarks;
-    while (benchmarks != NULL) {
+    while (benchmarks != nullptr) {
       const char* sep = strchr(benchmarks, ',');
       Slice name;
-      if (sep == NULL) {
+      if (sep == nullptr) {
         name = benchmarks;
-        benchmarks = NULL;
+        benchmarks = nullptr;
       } else {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
@@ -430,22 +448,53 @@ class Benchmark {
       entries_per_batch_ = 1;
       write_options_ = WriteOptions();
 
-      void (Benchmark::*method)(ThreadState*) = NULL;
+      void (Benchmark::*method)(ThreadState*) = nullptr;
       bool fresh_db = false;
       int num_threads = FLAGS_threads;
 
-      if (name == Slice("fillseq")) {
+      if (name == Slice("open")) {
+        method = &Benchmark::OpenBench;
+        num_ /= 10000;
+        if (num_ < 1) num_ = 1;
+      } else if (name == Slice("fillbatch")) {
         fresh_db = true;
+        entries_per_batch_ = 1000;
         method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillrandom")) {
         fresh_db = true;
         method = &Benchmark::WriteRandom;
+      } else if (name == Slice("overwrite")) {
+        fresh_db = false;
+        method = &Benchmark::WriteRandom;
+      } else if (name == Slice("fillsync")) {
+        fresh_db = true;
+        num_ /= 1000;
+        write_options_.sync = true;
+        method = &Benchmark::WriteRandom;
+      } else if (name == Slice("fill100K")) {
+        fresh_db = true;
+        num_ /= 1000;
+        value_size_ = 100 * 1000;
+        method = &Benchmark::WriteRandom;
       } else if (name == Slice("readseq")) {
         method = &Benchmark::ReadSequential;
+      } else if (name == Slice("readreverse")) {
+        method = &Benchmark::ReadReverse;
       } else if (name == Slice("readrandom")) {
         method = &Benchmark::ReadRandom;
+      } else if (name == Slice("readmissing")) {
+        method = &Benchmark::ReadMissing;
       } else if (name == Slice("seekrandom")) {
         method = &Benchmark::SeekRandom;
+      } else if (name == Slice("readhot")) {
+        method = &Benchmark::ReadHot;
+      } else if (name == Slice("readrandomsmall")) {
+        reads_ /= 1000;
+        method = &Benchmark::ReadRandom;
+      } else if (name == Slice("deleteseq")){
+        method = &Benchmark::DeleteSeq;
+      } else if (name == Slice("deleterandom")) {
+        method = &Benchmark::DeleteRandom;
       } else {
         if (name != Slice()) {  // No error message for empty name
           fprintf(stderr, "unknown benchmark '%s'\n", name.ToString().c_str());
@@ -456,16 +505,16 @@ class Benchmark {
         if (FLAGS_use_existing_db) {
           fprintf(stdout, "%-12s : skipped (--use_existing_db is true)\n",
                   name.ToString().c_str());
-          method = NULL;
+          method = nullptr;
         } else {
           delete db_;
-          db_ = NULL;
+          db_ = nullptr;
           DestroyDB(FLAGS_db, Options());
           Open();
         }
       }
 
-      if (method != NULL) {
+      if (method != nullptr) {
         RunBenchmark(num_threads, name, method);
       }
     }
@@ -509,11 +558,7 @@ class Benchmark {
 
   void RunBenchmark(int n, Slice name,
                     void (Benchmark::*method)(ThreadState*)) {
-    SharedState shared;
-    shared.total = n;
-    shared.num_initialized = 0;
-    shared.num_done = 0;
-    shared.start = false;
+    SharedState shared(n);
 
     ThreadArg* arg = new ThreadArg[n];
     for (int i = 0; i < n; i++) {
@@ -571,7 +616,7 @@ class Benchmark {
     int dummy;
     port::AtomicPointer ap(&dummy);
     int count = 0;
-    void *ptr = NULL;
+    void *ptr = nullptr;
     thread->stats.AddMessage("(each op is 1000 loads)");
     while (count < 100000) {
       for (int i = 0; i < 1000; i++) {
@@ -580,7 +625,7 @@ class Benchmark {
       count++;
       thread->stats.FinishedSingleOp();
     }
-    if (ptr == NULL) exit(1); // Disable unused variable warning.
+    if (ptr == nullptr) exit(1); // Disable unused variable warning.
   }
 
   void SnappyCompress(ThreadState* thread) {
@@ -631,16 +676,17 @@ class Benchmark {
   }
 
   void Open() {
-    assert(db_ == NULL);
+    assert(db_ == nullptr);
     Options options;
     options.env = g_env;
     options.create_if_missing = true;
     options.block_cache = NewLRUCache(4*1024*1024);
     options.write_buffer_size = 4*1024*1024;
     options.max_file_size = 4*1024*1024;
-    options.block_size = 4*1024;
+    options.block_size = 16*1024;//in fact the page size in ssd
     options.max_open_files = FLAGS_open_files;
     options.filter_policy = NewBloomFilterPolicy(10);
+    options.compression=kNoCompression;
     Status s = DB::Open(options, FLAGS_db, &db_);
     if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());
@@ -672,17 +718,20 @@ class Benchmark {
     }
 
     RandomGenerator gen;
+    WriteBatch batch;
     Status s;
     int64_t bytes = 0;
     for (int i = 0; i < num_; i += entries_per_batch_) {
+      batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
         const int k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
         char key[100];
         snprintf(key, sizeof(key), "%016d", k);
-        s = db_->Put(leveldb::WriteOptions(),&key[0], gen.Generate(value_size_).data());       
+        batch.Put(key, gen.Generate(value_size_));
         bytes += value_size_ + strlen(key);
         thread->stats.FinishedSingleOp();
       }
+      s = db_->Write(write_options_, &batch);
       if (!s.ok()) {
         fprintf(stderr, "put error: %s\n", s.ToString().c_str());
         exit(1);
@@ -838,7 +887,7 @@ class Benchmark {
   }
 
   void Compact(ThreadState* thread) {
-    db_->CompactRange(NULL, NULL);
+    db_->CompactRange(nullptr, nullptr);
   }
 
   void PrintStats(const char* key) {
@@ -874,11 +923,12 @@ class Benchmark {
 }  // namespace leveldb
 
 int main(int argc, char** argv) {
-  FLAGS_write_buffer_size = leveldb::Options().write_buffer_size;
-  FLAGS_max_file_size = leveldb::Options().max_file_size;
-  FLAGS_block_size = leveldb::Options().block_size;
-  FLAGS_open_files = leveldb::Options().max_open_files;
-  std::string default_db_path;
+  if(argc<2)
+  {
+      printf("./db_bench --benchmarks=xxx\n");
+      exit(1);
+  }
+  std::string default_path="./dbbench";
 
   for (int i = 1; i < argc; i++) {
     double d;
@@ -924,15 +974,12 @@ int main(int argc, char** argv) {
       exit(1);
     }
   }
-
+  if(FLAGS_db==nullptr)
+      FLAGS_db=default_path.c_str();
   leveldb::g_env = leveldb::Env::Default();
 
   // Choose a location for the test database if none given with --db=<path>
-  if (FLAGS_db == NULL) {
-      default_db_path = "./dbtest";
-      FLAGS_db = default_db_path.c_str();
-  }
-
+  
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+#include <iostream>
 #include <chrono>
 #include <thread>
 #include <dirent.h>
@@ -27,8 +28,8 @@
 #include "util/mutexlock.h"
 #include "util/posix_logger.h"
 #include "util/env_posix_test_helper.h"
-#define WRITE_TIME 83
-#define READ_TIME 37
+#define WRITE_FACTOR 0.49283 //47(1024*1024/1000000000
+#define READ_TIME 37000
 namespace leveldb {
 
 namespace {
@@ -103,7 +104,7 @@ class PosixSequentialFile: public SequentialFile {
 
   virtual Status Read(size_t n, Slice* result, char* scratch) {
     Status s;
-    std::this_thread::sleep_for(std::chrono::microseconds(READ_TIME));
+
     size_t r = fread_unlocked(scratch, 1, n, file_);
     *result = Slice(scratch, r);
     if (r < n) {
@@ -244,10 +245,15 @@ class PosixWritableFile : public WritableFile {
   }
 
   virtual Status Flush() {
-    std::this_thread::sleep_for(std::chrono::microseconds(WRITE_TIME));
+    //std::this_thread::sleep_for(std::chrono::nanoseconds(WRITE_TIME));
+    //auto start=std::chrono::system_clock::now();
     if (fflush_unlocked(file_) != 0) {
+      
       return IOError(filename_, errno);
     }
+    /*auto end=std::chrono::system_clock::now();
+    std::chrono::duration<double> diff=end-start;
+    std::cout<<"\nTIME TO WRITE:"<<diff.count()<<"s\n";*/
     return Status::OK();
   }
 
@@ -288,6 +294,11 @@ class PosixWritableFile : public WritableFile {
         fdatasync(fileno(file_)) != 0) {
       s = Status::IOError(filename_, strerror(errno));
     }
+    struct stat tmp_stat;
+    int fd=fileno(file_);
+    fstat(fd,&tmp_stat);
+    size_t file_size=tmp_stat.st_size;
+    std::this_thread::sleep_for(std::chrono::nanoseconds((int)(file_size*WRITE_FACTOR)));
     return s;
   }
 };
